@@ -23,12 +23,20 @@ import argparse  # Command line parsing
 import configparser  # Saving the models parameters
 import datetime  # Chronometer
 import os  # Files management
+import io
+import time
 import tensorflow as tf
 import numpy as np
 import math
 
 from tqdm import tqdm  # Progress bar
 from tensorflow.python import debug as tf_debug
+
+DISABLE_TTS = os.environ.get('DISABLE_TTS', False)
+if not DISABLE_TTS:
+    from google.cloud import texttospeech
+    from pygame import mixer # Load the required library
+
 
 from chatbot.textdata import TextData
 from chatbot.model import Model
@@ -107,6 +115,8 @@ class Chatbot:
         globalArgs.add_argument('--device', type=str, default=None, help='\'gpu\' or \'cpu\' (Warning: make sure you have enough free RAM), allow to choose on which hardware run the model')
         globalArgs.add_argument('--seed', type=int, default=None, help='random seed for replication')
 
+        globalArgs.add_argument('--tts', help='Play answers with google cloud tts', action='store_true')
+
         # Dataset options
         datasetArgs = parser.add_argument_group('Dataset options')
         datasetArgs.add_argument('--corpus', choices=TextData.corpusChoices(), default=TextData.corpusChoices()[0], help='corpus on which extract the dataset.')
@@ -133,6 +143,7 @@ class Chatbot:
         trainingArgs.add_argument('--batchSize', type=int, default=256, help='mini-batch size')
         trainingArgs.add_argument('--learningRate', type=float, default=0.002, help='Learning rate')
         trainingArgs.add_argument('--dropout', type=float, default=0.9, help='Dropout rate (keep probabilities)')
+
 
         return parser.parse_args(args)
 
@@ -198,6 +209,15 @@ class Chatbot:
         # Initialize embeddings with pre-trained word2vec vectors
         if self.args.initEmbeddings:
             self.loadEmbedding(self.sess)
+
+        if self.args.tts:
+            mixer.init()
+            self.tts_client = texttospeech.TextToSpeechClient()
+            self.tts_voice = texttospeech.types.VoiceSelectionParams(
+                language_code='es-MX',
+                ssml_gender=texttospeech.enums.SsmlVoiceGender.NEUTRAL)
+            self.tts_audio_config = texttospeech.types.AudioConfig(
+                audio_encoding=texttospeech.enums.AudioEncoding.MP3)
 
         if self.args.test:
             if self.args.test == Chatbot.TestMode.INTERACTIVE:
@@ -335,11 +355,19 @@ class Chatbot:
                 print('Warning: sentence too long, sorry. Maybe try a simpler sentence.')
                 continue  # Back to the beginning, try again
 
-            print('{}{}'.format(self.SENTENCES_PREFIX[1], self.textData.sequence2str(answer, clean=True)))
+            answer_str = self.textData.sequence2str(answer, clean=True)
+
+            print('{}{}'.format(self.SENTENCES_PREFIX[1], answer_str))
 
             if self.args.verbose:
                 print(self.textData.batchSeq2str(questionSeq, clean=True, reverse=True))
                 print(self.textData.sequence2str(answer))
+
+            if self.args.tts:
+                synthesis_input = texttospeech.types.SynthesisInput(text=answer_str)
+                response = self.tts_client.synthesize_speech(synthesis_input, self.tts_voice, self.tts_audio_config)
+                mixer.music.load(io.BytesIO(response.audio_content))
+                mixer.music.play()
 
             print()
 
